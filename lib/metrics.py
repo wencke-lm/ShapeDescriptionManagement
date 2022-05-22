@@ -5,6 +5,7 @@ import math
 
 import numpy as np
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
 from lib.exceptions import ScarceDataError
 from lib.utils import blockwise_cosine_similarity
@@ -12,7 +13,7 @@ from lib.utils import blockwise_cosine_similarity
 
 LOG = logging.getLogger(__name__)
 
-from tqdm import tqdm
+
 # ============================================================================
 #
 # INTRA-CLASS DIVERSITY
@@ -21,11 +22,11 @@ from tqdm import tqdm
 
 
 def self_bleu(count_mtrx, labels, unigram_idx=0, n_references=10):
-    """Compute averaged intra-class self BLEU score.
+    """Compute intra-class self BLEU score for each class.
 
     Args:
         count_mtrx (list):
-        Sequence of matrices (sp.sparse.coo_matrix)
+            Sequence of matrices (sp.sparse.coo_matrix)
             of word occurrence counts of shape (n_instance, n_voc).
             Each holding counts for a single ngram size.
         labels (np.ndarray):
@@ -38,7 +39,9 @@ def self_bleu(count_mtrx, labels, unigram_idx=0, n_references=10):
             except the hypothesis. Defaults to 10.
 
     Returns:
-        float: Score in range (0, 1].
+        list: 
+            Scores in range (0, 1] per class.
+            Indices correspond to numerical class label. 
             Higher scores indicate lower intra-class diversity.
 
     """
@@ -53,7 +56,7 @@ def self_bleu(count_mtrx, labels, unigram_idx=0, n_references=10):
     bleu_scores = []
 
     with tqdm(total=labels.shape[0], leave=False) as pbar:
-        for mask in labels.transpose():
+        for i, mask in enumerate(labels.transpose()):
             # partition matrix by class
             cls_count_mtrx = [mtrx[mask] for mtrx in count_mtrx]
             # calculate intra-class self BLEU
@@ -65,13 +68,14 @@ def self_bleu(count_mtrx, labels, unigram_idx=0, n_references=10):
                 )
             except ScarceDataError as e:
                 LOG.warning(e)
+                bleu_scores.append(None)
 
-        if not bleu_scores:
+        if all(map(lambda score: score is None, bleu_scores)):
             raise ScarceDataError(
                 "All classes hold too few instances (< 2)."
             )
 
-    return sum(bleu_scores)/len(bleu_scores)
+    return bleu_scores
 
 
 def _self_bleu(count_mtrx, unigram_idx=0, n_references=10, pbar=None):
@@ -95,8 +99,10 @@ def _self_bleu(count_mtrx, unigram_idx=0, n_references=10, pbar=None):
             A progress bar that will be updated if passed.
 
     Returns:
-        float: Score in range (0, 1]. Higher scores are
-            indicative of less diversity between instances.
+        float:
+            Score in range (0, 1].
+            Higher scores are indicative of
+            less diversity between instances.
 
     """
     n_instance = count_mtrx[0].shape[0]
@@ -143,7 +149,7 @@ def _self_bleu(count_mtrx, unigram_idx=0, n_references=10, pbar=None):
     w = 1/len(count_mtrx)
     score = math.fsum(w*math.log(n/d) for n, d in zip(num, denom))
 
-    return bp*math.exp(score)
+    return round(bp*math.exp(score), 8)
 
 
 def _closest_ref_len(hyp_len, references):
@@ -245,7 +251,7 @@ def _modified_precision(hypothesis, references):
     return numerator + 1, denominator + 1
 
 
-def mean_subgraph_density(feat_mtrx, labels, max_size=200):
+def subgraph_density(feat_mtrx, labels, max_size=200):
     """Compute mean subgraph density.
 
     A feature encoded dataset is represented as a graph by
@@ -269,7 +275,9 @@ def mean_subgraph_density(feat_mtrx, labels, max_size=200):
             evaluated in blocks. Defaults to 200.
 
     Returns:
-        float: Mean density in range [0, 1].
+        list: 
+            Density in range [0, 1] per class.
+            Indices correspond to numerical class label.
             Higher values are indicative of more densely
             connected, less diverse nodes within a class.
 
@@ -286,10 +294,9 @@ def mean_subgraph_density(feat_mtrx, labels, max_size=200):
         cls_mtrx = feat_mtrx[mask]
         n_instance, _ = cls_mtrx.shape
 
-        if n_instance == 0:
-            continue
-        if n_instance == 1:
-            densities.append(1)
+        if n_instance < 2:
+            LOG.warning("A class holds too few (< 2) instances.")
+            densities.append(None)
             continue
 
         densities.append(0)
@@ -298,9 +305,10 @@ def mean_subgraph_density(feat_mtrx, labels, max_size=200):
         ):
             densities[-1] += np.tril(adj_mtrx, -1-start_idx).sum()
 
-        densities[-1] /= (n_instance*(n_instance-1)/2)
+        densities[-1] /= n_instance*(n_instance-1)/2
+        densities[-1] = round(densities[-1], 8)
 
-    return sum(densities) / len(densities)
+    return densities
 
 
 # ============================================================================
@@ -313,7 +321,9 @@ def mean_subgraph_density(feat_mtrx, labels, max_size=200):
 def minimum_hellinger_distance(count_mtrx, labels):
     """Compute the minimum pairwise distance between classes.
 
-    Classes are modelled as ngram distributions.
+    Classes are modelled as ngram distributions. Each class
+    is compared to all other classes and its distances to the
+    closest neighbour class calculated.
 
     Args:
         count_mtrx (list):
@@ -324,7 +334,9 @@ def minimum_hellinger_distance(count_mtrx, labels):
             One-hot encoded gold labels of shape (n_instance, n_class).
 
     Returns:
-        float: Minimum distance in the range [0, 1].
+        list: 
+            Minimum distance in the range [0, 1] per class.
+            Indices correspond to numerical class label.
             Lower values indicate that at least two
             classes are very similar to each other.
 
@@ -333,30 +345,37 @@ def minimum_hellinger_distance(count_mtrx, labels):
     count_mtrx = [mtrx.tocsc() for mtrx in count_mtrx]
 
     cls_distr = []
-    min_distance = 1
+    min_distance = [1 for _ in range(labels.shape[1])]
 
-    for mask in labels.transpose():
+    for k, mask in enumerate(labels.transpose()):
         # partition matrix by class
         self_cls_distr = [
             mtrx[mask].sum(axis=0, dtype=np.float32) for mtrx in count_mtrx
         ]
-        self_cls_total = [mtrx.sum() for mtrx in self_cls_distr]
+        self_cls_distr = [
+            distr/distr.sum() for distr in self_cls_distr if distr.sum() != 0
+        ]
 
-        for i, total in enumerate(self_cls_total):
-            if total != 0:
-                self_cls_distr[i] /= total
+        if len(self_cls_distr) != len(count_mtrx):
+            LOG.warning(
+                "At least one instance holds no ngrams of specified ngram size."
+                "Check your data and remove empty strings."
+            )
+            min_distance[k] = None
+            continue
 
-        for other_cls_distr in cls_distr:
+        for l, other_cls_distr in cls_distr:
             distances = []
-            # averange the hellinger distances acroos ngram sizes
+            # average the hellinger distances acroos ngram sizes
             for i, distr in enumerate(self_cls_distr):
                 distances.append(
                     _hellinger_distance(other_cls_distr[i], distr)
                 )
             distance = sum(distances)/len(distances)
-            min_distance = min(min_distance, distance)
+            min_distance[k] = round(min(min_distance[k], distance), 8)
+            min_distance[l] = round(min(min_distance[l], distance), 8)
 
-        cls_distr.append(self_cls_distr)
+        cls_distr.append((k, self_cls_distr))
 
     return min_distance
 
@@ -407,7 +426,8 @@ def geometric_separability_index(feat_mtrx, labels, max_size=200):
             Larger datasets will be evaluated in blocks.
 
     Returns:
-        float: Proportion in the range [0, 1].
+        float: Proportions in the range [0, 1] per class.
+            Indices correspond to numerical class label.
             If this measure is high, it is likely that
             a clear boundary between classes can be found.
             However, the opposite is not the case.
@@ -416,15 +436,15 @@ def geometric_separability_index(feat_mtrx, labels, max_size=200):
             be low, despite the existence of a clear boundary.
 
     """
-    if labels.shape[0] == 0:
-        raise ScarceDataError("The data set is empty.")
+    if (labels.sum(axis=0) == 0).any():
+        raise ScarceDataError("At least one class holds no instances.")
+
+    nn_match = [0 for _ in range(labels.shape[1])]
 
     # transform from one-hot to integer representation
     _, labels = np.where(labels)
     # necessary for efficient row operations (slicing)
     feat_mtrx = feat_mtrx.tocsr()
-
-    nn_match = 0
 
     for start_idx, adj_mtrx in blockwise_cosine_similarity(
         feat_mtrx, max_size
@@ -434,12 +454,15 @@ def geometric_separability_index(feat_mtrx, labels, max_size=200):
 
         nn_simil = np.amax(adj_mtrx, axis=0)
         nn_idx, instance_idx = np.nonzero(adj_mtrx == nn_simil)
+
         matches = (labels[nn_idx] == labels[start_idx+instance_idx])
-
         # normalize by number of nearest neighbour per instance
-        nn_match += sum(matches/np.bincount(instance_idx)[instance_idx])
+        normalized_matches = matches/np.bincount(instance_idx)[instance_idx]
 
-    return nn_match / len(labels)
+        for label, match in zip(labels[nn_idx], normalized_matches):
+            nn_match[label] += match
+
+    return list(np.around(np.array(nn_match) / np.bincount(labels), 8))
 
 
 # ============================================================================
@@ -450,6 +473,19 @@ def geometric_separability_index(feat_mtrx, labels, max_size=200):
 
 
 def imbalance_ratio(labels):
+    label_counts = labels.sum(axis=0)
+
+    if np.count_nonzero(label_counts) < 2:
+        raise ScarceDataError("Too few (< 2) classes included.")
+
+    label_counts = label_counts[np.nonzero(label_counts)]
+    imbalance_ratio = label_counts/label_counts.max()
+
+    return list(np.around(imbalance_ratio, 8))
+
+
+
+def multiclass_imbalance_ratio(labels):
     """Compute the inverse imbalance ratio.
 
     Let C be the number of classes, |Ic| the number of instances
@@ -486,87 +522,14 @@ def imbalance_ratio(labels):
 # ============================================================================
 
 
-def type_token_ratio(count_mtrx):
-    """Compute the ratio distinct words : total words.
-
-    Let the nominator be the vocabulary size and the
-    denominator be the number of words in the data set.
-
-    We define:
-    ... r_dist:total = count(w_dist) / count(w_total)
-
-    Args:
-        count_mtrx (sp.sparse.coo_matrix):
-            Word occurence counts as positive integers in
-            a matrix of shape (n_instance, n_voc).
-
-    Returns:
-        float: Ratio distinct : total words in range (0, 1].
-            A sparse data set, where every word occurs once,
-            achieves a value of 1.
-
-    """
-    word_counts = count_mtrx.sum(axis=0)
-
-    distinct_word_count = np.count_nonzero(word_counts)
-    total_word_count = word_counts.sum()
-
-    if total_word_count == 0:
-        raise ScarceDataError("The passed data set holds no tokens.")
-
-    return distinct_word_count / total_word_count
-
-
-def infrequent_type_ratio(count_mtrx, delta=10):
-    """Compute the ratio infrequent types : total types.
-
-    Let the nominator be the number of unique words that
-    occur less than delta-times and denominator be the
-    vocabulary size.
-
-    We define:
-    ... r_infreq:total = count(tok_infreq) / count(tok_total)
-
-    Args:
-        count_mtrx (sp.sparse.coo_matrix):
-            Word occurence counts as positive integers in
-            a matrix of shape (n_instance, n_voc).
-        delta (Optional[int]):
-            Any token with an absolute frequency below or equal
-            to this threshold is considered infrequent.
-            Threshold defaults to 10.
-
-    Returns:
-        float: Ratio infrequent types : total types in
-            range [0, 1]. A sparse data set, where every
-            word occurs less than delta-times, is assigned
-            a value of 1.
-
-    """
-
-    word_occ_counts = count_mtrx.sum(axis=0)
-    total_type_count = np.count_nonzero(word_occ_counts)
-
-    if total_type_count == 0:
-        raise ScarceDataError("The passed data set holds no tokens.")
-
-    infrequent_type_count = np.count_nonzero(
-        np.logical_and(
-            word_occ_counts > 0, word_occ_counts <= delta
-        )
-    )
-    return infrequent_type_count / total_type_count
-
-
 def subset_representativity(count_mtrx, labels, steps=100):
     """Compute a measure of subset representativity.
 
-    A class-stratified split of the data set into two
-    non-overlapping subsets of equal size is created.
-    One of those two sets is understood to be new incoming
-    data. Then, the number of unique words that occur
-    within this part and have also been observed for the
-    other part is computed.
+    Each class is split into two non-overlapping subsets
+    of equal size. One of those two sets is understood
+    to be new incoming data. Then, the number of unique
+    words that occur within this part and have also been
+    observed for the other part is computed.
 
     We define the ratio of seen types:
     ... r_seen:total = count(tok_seen) / count(tok_total)
@@ -576,47 +539,60 @@ def subset_representativity(count_mtrx, labels, steps=100):
             Word occurence counts as positive integers in
             a matrix of shape (n_instance, n_voc).
         labels (np.ndarray):
-            Gold labels as integers of shape (n_instance, )
-            or one-hot encoding of shape (n_instance, n_voc).
+            One-hot encoded gold labels of shape (n_instance, n_class).
+        steps (int):
+            Number of times to repeat the random split process.
 
-    float: Ratio seen types : total types in range [0, 1].
-        A sparse data set, where one part provides no
-        information about the other part, will achieve values
-        close to 0.
+    Returns:
+        list: 
+            Ratio seen types : total types in range [0, 1] per class.
+            Indices correspond to numerical class label.
+            A sparse class, where one part provides no information
+            about the other part, will achieve values close to 0.
 
     """
-    if (labels.sum(axis=0) < 2).any():
-        print(labels.sum(axis=0))
-        raise ScarceDataError(
-            "At least one class holds too few (< 2) instances."
-        )
+    # necessary for efficient row operations (slicing)
+    count_mtrx = count_mtrx.tocsr()
 
-    seen_type_ratio_acc = 0
+    seen_type_ratio = []
 
-    for _ in range(steps):
-        old_count_mtrx, new_count_mtrx = train_test_split(
-            count_mtrx, train_size=0.5, stratify=labels
-        )
-        old_word_occ_counts = old_count_mtrx.sum(axis=0)
-        new_word_occ_counts = new_count_mtrx.sum(axis=0)
+    for mask in labels.transpose():
+        # partition matrix by class
+        cls_mtrx = count_mtrx[mask]
 
-        seen_type_count = np.count_nonzero(
-            np.logical_and(
-                old_word_occ_counts > 0,
-                new_word_occ_counts > 0
+        if (mask.sum() < 2):
+            LOG.warning("A class holds too few (< 2) instances.")
+            seen_type_ratio.append(None)
+            continue
+
+        seen_type_ratio_cls = 0
+
+        for _ in range(steps):
+            old_count_mtrx, new_count_mtrx = train_test_split(
+                cls_mtrx, train_size=0.5
             )
-        )
-        new_type_count = np.count_nonzero(new_word_occ_counts)
+            old_word_occ_counts = old_count_mtrx.sum(axis=0)
+            new_word_occ_counts = new_count_mtrx.sum(axis=0)
 
-        if new_type_count == 0:
-            raise ScarceDataError(
-                "At least one instance holds no tokens."
-                "Check your data and remove empty strings."
+            seen_type_count = np.count_nonzero(
+                np.logical_and(
+                    old_word_occ_counts > 0,
+                    new_word_occ_counts > 0
+                )
             )
-        else:
-            seen_type_ratio_acc += seen_type_count / new_type_count
+            new_type_count = np.count_nonzero(new_word_occ_counts)
 
-    return seen_type_ratio_acc / steps
+            if new_type_count == 0:
+                raise ScarceDataError(
+                    "At least one instance holds no tokens."
+                    "Check your data and remove empty strings."
+                )
+            else:
+                seen_type_ratio_cls += seen_type_count / new_type_count
+
+        seen_type_ratio.append(round(seen_type_ratio_cls/steps, 8))
+
+    return seen_type_ratio
 
 
 # ============================================================================
@@ -641,14 +617,17 @@ def number_of_classes(labels):
 
 
 def number_of_instances(labels):
-    """Get the number of instances in a data set.
+    """Get the number of instances per class.
 
     Args:
-        labels (np.ndarray): One-hot encoded gold
-            labels of shape (n_instance, n_class).
+        labels (np.ndarray):
+            One-hot encoded gold labels of
+            shape (n_instance, n_class).
 
     Returns:
-        int: Number of instances.
+        list:
+            Number of instances per class.
+            Indices correspond to numerical class label.
 
     """
-    return labels.shape[0]
+    return list(labels.sum(axis=0))

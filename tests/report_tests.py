@@ -4,6 +4,8 @@ import os
 import sys
 import unittest
 
+import pandas as pd
+
 # in order to access module from sister directory
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
@@ -25,47 +27,37 @@ class ReportTestCase(unittest.TestCase):
             "cat",
             "dog"
         ]
-        result = ComplexityReport.from_raw_data(texts, labels)
-        # might change due to random component
-        result.pop("Subset Representativity")
+        report = ComplexityReport.from_raw_data(texts, labels).info
+        # Subset Representativity might change due to random component
+        report.drop(columns=["Subset Representativity"], inplace=True)
 
-        expected = {
-            "Mean Self-BLEU": 0.41721988,
-            "Mean Subgraph Density": 0.07192994,
-            "Minimum Hellinger Distance": 0.82515094,
-            "Geometric Separability Index": 0.0,
-            "Imbalance Ratio": 1.0,
-            "Number of Classes": 2,
-            "Number of Instances": 4
-        }
-        self.assertEqual(result, expected)
+        result_cat = report.loc["cat"].tolist()
+        expected_cat = [
+            0.47809144, 0.093642, 0.82515094, 0.0, 1.0, 2.0, 2.0
+        ]
+        self.assertEqual(result_cat, expected_cat)
 
-    def test_normalize_metrics(self):
+        result_dog = report.loc["dog"].tolist()
+        expected_dog = [
+            0.35634832, 0.05021789, 0.82515094, 0.0, 1.0, 2.0, 2.0
+        ]
+        self.assertEqual(result_dog, expected_dog)
+
+    def test_missing_metric(self):
         texts = [
             "this cat sleeps",
             "this dog sleeps cutely",
-            "a cat",
             "a a dog"
         ]
         labels = [
             "cat",
             "dog",
-            "cat",
             "dog"
         ]
-        result = ComplexityReport.from_raw_data(texts, labels)
-        # might change due to random component
-        result.pop("Subset Representativity")
-        # normalize
-        result.normalize()
+        report = ComplexityReport.from_raw_data(texts, labels).info
 
-        expected = {
-            "Mean Self-BLEU": 0.41721988,
-            "Mean Subgraph Density": 0.07192994,
-            "Minimum Hellinger Distance": 0.82515094,
-            "Geometric Separability Index": 0.0,
-            "Imbalance Ratio": 1.0,
-            "Number of Classes": 0.5,
-            "Number of Instances": 0.00057757
-        }
-        self.assertEqual(result, expected)
+        result_cat = pd.isna(report.loc["cat"]).tolist()
+        expected_cat = [
+            True, True, False, False, False, True, False, False
+        ]
+        self.assertEqual(result_cat, expected_cat)

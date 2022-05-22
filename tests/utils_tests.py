@@ -25,7 +25,7 @@ class UtilsTestCase(unittest.TestCase):
             ["cat", "dog", "cat"]
         )
         expected = (
-            np.array([0, 1, 0]), {0: "cat", 1: "dog"}
+            np.array([0, 1, 0]), ["cat", "dog"]
         )
         np.testing.assert_array_equal(result[0], expected[0])
         self.assertEqual(result[1], expected[1])

@@ -13,18 +13,20 @@ def get_numerical_from_categorical(vec):
         vec (Sequence): Any categorical sequence.
 
     Returns:
-        np.ndarray: Array of shape (n_instance, ).
+        tuple: np.ndarray, list
+            Numeric array of shape (n_instance, ).
+            Categorical labels at their assigned numeric position.
 
     Example:
         >>> get_numerical_from_categorical(["cat", "dog", "cat"])
-        (array([0, 1, 0]), {0: "cat", 1: "dog"})
+        (array([0, 1, 0]), ["cat", "dog"])
 
     """
     cat_to_idx = dict()
     num_vec = [cat_to_idx.setdefault(cat, len(cat_to_idx)) for cat in vec]
-    idx_to_cat = {value:key for key, value in cat_to_idx.items()}
+    cat_fields = sorted(cat_to_idx, key=lambda cat: cat_to_idx[cat])
 
-    return np.array(num_vec), idx_to_cat
+    return np.array(num_vec), cat_fields
 
 
 def get_one_hot_encoding_from_numerical(vec):

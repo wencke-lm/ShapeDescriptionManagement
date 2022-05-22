@@ -43,7 +43,7 @@ def load_two_column_csv_file(path, encoding="utf-8", delimiter=","):
             yield line
 
 
-def iterate_training_datasets(directory):
+def iterate_training_datasets(directory, mode="train"):
     """Iterates over all training data in the passed directory.
 
     Each nested directory must follow the following structure:
@@ -70,33 +70,22 @@ def iterate_training_datasets(directory):
         str: Path to the next csv-file with training data.
 
     """
-    for nested_dir in reversed(os.listdir(directory)):
+    for nested_dir in os.listdir(directory):
         if nested_dir.startswith(".") or nested_dir.startswith("__"):
             continue
 
-        full_path = os.path.join(
-            directory, nested_dir, "training", f"{nested_dir}__FULL.csv"
-        )
-
+        if mode == "train":
+            full_path = os.path.join(
+                directory, nested_dir, "training", f"{nested_dir}__FULL.csv"
+            )
+        else:
+            full_path = os.path.join(
+                directory, nested_dir, "eval", f"{nested_dir}__TEST.csv"
+            )
         yield nested_dir, full_path
 
 
-def load_complexity_report(filename):
-    with open(
-        filename,
-        encoding="utf-8", newline=''
-    ) as file_in:
-
-        reader = csv.DictReader(file_in, delimiter="\t")
-
-        for line in reader:
-            name = line.pop("Dataset")
-            line = {key: float(value) for key, value in line.items()}
-
-            yield ComplexityReport(precomputed=line, name=name)
-
-
-def write_complexity_report(source, output, **kwargs):
+def write_complexity_report(source, output, delimiter="\t", **kwargs):
     """Create a complexity report for a collection of data sets.
 
     Each nested directory must follow the following structure:
@@ -118,23 +107,21 @@ def write_complexity_report(source, output, **kwargs):
     Args:
         source (str): Path to a directory that includes
             several data sets as nested directories.
-        output (str): Directory that a tsv-file, called
+        output (str): Directory that a csv-file, called
             'complexity_report.tsv' will be saved to.
             If a file of the same name already exists, it
             will be overriden. Defaults to current directory.
+        delimiter (str): Character that separates entries in
+            the nested two column csv-files.
 
     """
-
     with open(
         os.path.join(output, "complexity_report.tsv") ,
         'w', encoding="utf-8", newline=''
     ) as file_out:
 
-        writer = csv.DictWriter(
-            file_out, delimiter='\t',
-            fieldnames=["Dataset", *ComplexityReport.fields]
-        )
-        writer.writeheader()
+        writer = csv.writer(file_out, delimiter=delimiter)
+        writer.writerow(["Dataset", "Class", *ComplexityReport.fields])
 
         for name, file in iterate_training_datasets(source):
             LOG.info(f"----> Dataset: {name} <----")
@@ -142,4 +129,11 @@ def write_complexity_report(source, output, **kwargs):
             texts, labels = zip(*load_two_column_csv_file(file, **kwargs))
 
             report = ComplexityReport.from_raw_data(texts, labels, name=name)
-            writer.writerow({"Dataset": name, **report})
+
+            for class_name, content in report.info.iterrows():
+                writer.writerow([
+                    name,
+                    class_name,
+                    *content.tolist()
+                ])
+            file_out.flush()
