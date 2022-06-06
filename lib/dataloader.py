@@ -121,7 +121,9 @@ def write_complexity_report(source, output, delimiter="\t", **kwargs):
     ) as file_out:
 
         writer = csv.writer(file_out, delimiter=delimiter)
-        writer.writerow(["Dataset", "Class", *ComplexityReport.fields])
+        writer.writerow(
+            ["Dataset", "Class", *ComplexityReport.fields, "Complexity Class"]
+        )
 
         for name, file in iterate_training_datasets(source):
             LOG.info(f"----> Dataset: {name} <----")
@@ -134,6 +136,7 @@ def write_complexity_report(source, output, delimiter="\t", **kwargs):
                 writer.writerow([
                     name,
                     class_name,
-                    *content.tolist()
+                    *content.tolist(),
+                    report.get_complexity_class(content)
                 ])
             file_out.flush()

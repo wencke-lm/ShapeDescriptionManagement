@@ -1,10 +1,15 @@
 """report.py - create comprehensive report on all complexity metrics"""
 
+from collections import Counter
 import logging
 import math
+import os
+import sys
 
 import pandas as pd
+import numpy as np
 import scipy as sp
+from sklearn.tree import DecisionTreeRegressor
 from tqdm import tqdm
 
 from lib.metrics import (
@@ -24,6 +29,9 @@ from lib.utils import (
     tf_idf
 )
 
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ROOT)
 
 LOG = logging.getLogger(__name__)
 
@@ -149,3 +157,76 @@ class ComplexityReport:
             )
             pbar.update(1)
 
+    @classmethod
+    def get_complexity_class(cls, array):
+        """Assign a complexity class."""
+
+        df_gold = pd.read_csv(
+            os.path.join(ROOT, "gold_complexity_generic_class.csv")
+        )
+        df_pred = pd.read_csv(
+            os.path.join(ROOT, "pred_complexity_generic_class.csv")
+        )
+
+        df = pd.merge(df_gold, df_pred, on=["Dataset", "Class"])
+        df = df[df["Mean"] != 0]
+
+        X = df.iloc[:, 11:-2].to_numpy()
+        y = df.iloc[:, 10].to_numpy()
+
+        c = Counter(y)
+        weights = np.where(
+            y == 0, 1/c[0], 
+            np.where(
+                y == 1, 1/c[1], 
+                np.where(
+                    y == 2, 1/c[2], 
+                    np.where(
+                        y == 3, 1/c[3], 
+                        np.where(
+                            y == 4, 1/c[4], -1
+                        )
+                    )
+                )
+            )
+        )
+
+        clf = DecisionTreeRegressor(max_features=6, max_depth=5, min_samples_leaf=12)
+        clf.fit(X, y, sample_weight=weights)
+        cls.prune_tree(clf.tree_)
+        return clf.predict([array[:-2]])[0]
+
+
+    @staticmethod
+    def prune_tree(sklern_tree):
+        """Discretize leaf values and remove nodes not adding info."""
+
+        def rek_prune(node_id):
+            left_child = sklern_tree.children_left[node_id]
+            right_child = sklern_tree.children_right[node_id]
+
+            if left_child == -1 and right_child == -1:
+                sklern_tree.value[node_id][0][0] = round(sklern_tree.value[node_id][0][0])
+                return sklern_tree.value[node_id][0][0]
+
+            left = rek_prune(left_child)
+            right = rek_prune(right_child)
+
+            if isinstance(left, float) and isinstance(right, float) and (left == right):
+                sklern_tree.value[node_id][0][0] = (
+                    sklern_tree.n_node_samples[left_child]
+                    * sklern_tree.value[left_child][0][0]
+                    + sklern_tree.n_node_samples[right_child]
+                    * sklern_tree.value[right_child][0][0]
+                ) / (
+                    sklern_tree.n_node_samples[left_child]
+                    + sklern_tree.n_node_samples[right_child]
+                )
+
+                sklern_tree.children_left[node_id] = -1
+                sklern_tree.children_right[node_id] = -1
+                return sklern_tree.value[node_id][0][0]
+
+            return None
+
+        return rek_prune(0)
