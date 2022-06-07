@@ -158,7 +158,7 @@ class ComplexityReport:
             pbar.update(1)
 
     @classmethod
-    def get_complexity_class(cls, array):
+    def get_complexity_class(cls, compl_measures):
         """Assign a complexity class."""
 
         df_gold = pd.read_csv(
@@ -171,31 +171,21 @@ class ComplexityReport:
         df = pd.merge(df_gold, df_pred, on=["Dataset", "Class"])
         df = df[df["Mean"] != 0]
 
+        # remove meta statistics
         X = df.iloc[:, 11:-2].to_numpy()
         y = df.iloc[:, 10].to_numpy()
 
-        c = Counter(y)
-        weights = np.where(
-            y == 0, 1/c[0], 
-            np.where(
-                y == 1, 1/c[1], 
-                np.where(
-                    y == 2, 1/c[2], 
-                    np.where(
-                        y == 3, 1/c[3], 
-                        np.where(
-                            y == 4, 1/c[4], -1
-                        )
-                    )
-                )
-            )
-        )
+        # apply weights as the inverse frequency of a class
+        weights = (1/np.bincount(y))[y]
 
-        clf = DecisionTreeRegressor(max_features=6, max_depth=5, min_samples_leaf=12)
+        # train tree classifier
+        clf = DecisionTreeRegressor(
+            max_features=6, max_depth=5, min_samples_leaf=12
+        )
         clf.fit(X, y, sample_weight=weights)
         cls.prune_tree(clf.tree_)
-        return clf.predict([array[:-2]])[0]
 
+        return clf.predict([compl_measures[:-2]])[0]
 
     @staticmethod
     def prune_tree(sklern_tree):
